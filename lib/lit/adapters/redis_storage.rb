@@ -1,4 +1,6 @@
 require 'redis'
+require 'lit/services/localization_keys_to_hash_service'
+
 module Lit
   extend self
   def redis
@@ -23,14 +25,17 @@ module Lit
       # Fall back with older gem
       Lit.redis.exists(key)
     end
-    
+
     def [](key)
       if self.exists?(_prefixed_key_for_array(key))
         Lit.redis.lrange(_prefixed_key(key), 0, -1)
       elsif self.exists?(_prefixed_key_for_nil(key))
         nil
       else
-        Lit.redis.get(_prefixed_key(key))
+        val = Lit.redis.get(_prefixed_key(key))
+        return val if val.present?
+
+        get_subtree_of_key(key)
       end
     end
 
@@ -102,6 +107,22 @@ module Lit
 
     def _prefixed_key_for_nil(key = '')
       _prefix + 'nil_flags:' + key.to_s
+    end
+
+    def get_subtree_of_key(key)
+      keys_of_subtree = Lit.redis.scan_each(match: "#{_prefixed_key(key)}*").to_a
+      return nil if keys_of_subtree.empty?
+
+      values_of_subtree = Lit.redis.mget(keys_of_subtree)
+      cache_localizations = form_cache_localizations(keys_of_subtree, values_of_subtree)
+
+      full_subtree = Lit::LocalizationKeysToHashService.call(cache_localizations)
+      full_subtree.transform_keys!(&:to_sym)
+      full_subtree.dig(*key.split('.'))
+    end
+
+    def form_cache_localizations(keys, values)
+      Hash[keys.map { |k| k.sub(_prefix, '') }.zip(values)]
     end
   end
 end
